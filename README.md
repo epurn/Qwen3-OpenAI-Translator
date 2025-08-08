@@ -16,7 +16,6 @@ To install this project perform the following steps:
     provider: openrouter
     model: qwen/qwen3-coder
     apiBase: http://localhost:8000/v1
-    apiKey: <YOUR KEY>
     defaultCompletionOptions:
       contextLength: 262144
       stream: false
