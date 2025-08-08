@@ -9,7 +9,7 @@ To install this project perform the following steps:
 2. Add your openrouter api key to a .env file in the root directory as follows:
     OPENROUTER_API_KEY=<your_key>
 3. Add the following block to the config.yaml file in your .continue folder:
-'''
+```
   - name: TEST - Qwen 3 Coder Agent
     provider: openrouter
     model: qwen/qwen3-coder
@@ -24,7 +24,7 @@ To install this project perform the following steps:
       - apply
       - chat
       - edit
-'''
+```
 
 ## Usage
 From the base directory, run:
