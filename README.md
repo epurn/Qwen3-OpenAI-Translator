@@ -9,6 +9,7 @@ To install this project perform the following steps:
 2. Add your openrouter api key to a .env file in the root directory as follows:
     OPENROUTER_API_KEY=<your_key>
 3. Add the following block to the config.yaml file in your .continue folder:
+'''
   - name: TEST - Qwen 3 Coder Agent
     provider: openrouter
     model: qwen/qwen3-coder
@@ -23,6 +24,7 @@ To install this project perform the following steps:
       - apply
       - chat
       - edit
+'''
 
 ## Usage
 From the base directory, run:
@@ -37,7 +39,7 @@ I am hoping Continue will release a version that supports XML based tool calling
 - Allow different hostname/port - currently hardcoded to http://localhost:8000
 - ADD STREAMING SUPPORT
 - Add tests
-- Reccomend stuff to add and I'll add it asap 😊
+- Recommend stuff to add and I'll add it asap 😊
 
 ## License
 This project is licensed under the Apache 2.0 License - see the [LICENSE](LICENSE) file for details.
