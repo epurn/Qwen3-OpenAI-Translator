@@ -14,7 +14,7 @@ To install this project perform the following steps:
     provider: openrouter
     model: qwen/qwen3-coder
     apiBase: http://localhost:8000/v1
-    apiKey: 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
+    apiKey: <YOUR KEY>
     defaultCompletionOptions:
       contextLength: 262144
       stream: false
