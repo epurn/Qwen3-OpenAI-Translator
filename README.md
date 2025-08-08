@@ -1,5 +1,7 @@
 # Qwen3ToolCallTranslator
 
+Enables Agent mode for Qwen3 in Continue.dev!
+
 ## Description
 Qwen3ToolCallTranslator is a tool for translating Qwen3 model tool calls.
 
