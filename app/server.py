@@ -1,11 +1,13 @@
 import json
 import logging
+import time
 from fastapi import FastAPI
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from typing import List, Optional, Set
+from app.state import get_last_edit_text
 from app.streaming_parser import QwenStreamingParser
 from app.translator import translate_xml_to_openai
-from app.schema import AssistantMessage, ChatCompletionRequest, ChatCompletionResponse, Choice, FunctionCall, ToolCall, TranslatedResponse, TranslationRequest, UsageStats
+from app.schema import AssistantMessage, ChatCompletionRequest, ChatCompletionResponse, Choice, CompletionChoice, CompletionRequest, CompletionResponse, FunctionCall, ToolCall, TranslatedResponse, TranslationRequest, UsageStats
 from dotenv import load_dotenv
 import httpx
 import os
@@ -40,6 +42,38 @@ async def health():
 
 # ----- OpenAI-compatible endpoint -----
 
+@app.post("/v1/completions")
+async def legacy_completions(request: CompletionRequest):
+    """
+    Minimal /v1/completions shim for Continue's edit diff streamer.
+    DO NOT send an empty 'text' chunk—doing so wipes the file.
+    We emit no data chunks and only [DONE], so Continue falls back
+    to the tool call's provided 'text' for applying the edit.
+    """
+    created = int(time.time())
+    if request.stream:
+        async def event_stream():
+            # single chunk with the full replacement text, then [DONE]
+            chunk = {
+                "id": "cmp-apply",
+                "object": "text_completion",
+                "created": created,
+                "model": request.model,
+                "choices": [{"index": 0, "text": get_last_edit_text(), "finish_reason": None}],
+            }
+            yield f"data: {json.dumps(chunk)}\n\n"
+            yield "data: [DONE]\n\n"
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+    # Non-stream fallback: return a harmless whitespace token (not empty)
+    return JSONResponse({
+        "id": "cmp-legacy",
+        "object": "text_completion",
+        "created": created,
+        "model": request.model,
+        "choices": [{"index": 0, "text": " ", "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 0, "completion_tokens": 1, "total_tokens": 1},
+    })
 
 @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
 async def openai_compatible(request: ChatCompletionRequest):
