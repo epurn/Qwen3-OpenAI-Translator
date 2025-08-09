@@ -1,5 +1,6 @@
 # Qwen3ToolCallTranslator
 
+NO LONGER NEEDED - QWEN 3 is fully supported now
 Enables Agent mode for Qwen3 in Continue.dev!
 
 ## Description
