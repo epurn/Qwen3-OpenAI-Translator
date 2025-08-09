@@ -1,11 +1,13 @@
 import json
 import logging
+import time
 from fastapi import FastAPI
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from typing import List, Optional, Set
+from app.state import clear_edits, has_edits, pop_edit, set_in_flight
 from app.streaming_parser import QwenStreamingParser
 from app.translator import translate_xml_to_openai
-from app.schema import AssistantMessage, ChatCompletionRequest, ChatCompletionResponse, Choice, FunctionCall, ToolCall, TranslatedResponse, TranslationRequest, UsageStats
+from app.schema import AssistantMessage, ChatCompletionRequest, ChatCompletionResponse, Choice, CompletionChoice, CompletionRequest, CompletionResponse, FunctionCall, ToolCall, TranslatedResponse, TranslationRequest, UsageStats
 from dotenv import load_dotenv
 import httpx
 import os
@@ -21,7 +23,6 @@ app = FastAPI()
 # Add this line at the top (env var or hardcoded)
 API_KEY = os.getenv("API_KEY")
 QWEN_BASE_URL = os.getenv("QWEN_BASE_URL")
-
 
 # ----- Simple health + debug -----
 
@@ -39,6 +40,65 @@ async def health():
 
 
 # ----- OpenAI-compatible endpoint -----
+
+@app.post("/v1/completions")
+async def legacy_completions(request: CompletionRequest):
+    created = int(time.time())
+
+    if request.stream:
+        async def event_stream():
+            streamed_any = False
+            # Drain the single global queue
+            while has_edits():
+                text = pop_edit()
+                if text is None:
+                    break
+                chunk = {
+                    "id": "cmp-apply",
+                    "object": "text_completion",
+                    "created": created,
+                    "model": request.model,
+                    "choices": [{"index": 0, "text": text, "finish_reason": None}],
+                }
+                yield f"data: {json.dumps(chunk)}\n\n"
+                streamed_any = True
+
+            if not streamed_any:
+                # Continue sometimes expects at least one chunk
+                chunk = {
+                    "id": "cmp-apply",
+                    "object": "text_completion",
+                    "created": created,
+                    "model": request.model,
+                    "choices": [{"index": 0, "text": " ", "finish_reason": None}],
+                }
+                yield f"data: {json.dumps(chunk)}\n\n"
+
+            # Signal end-of-apply and release the in-flight latch
+            yield "data: [DONE]\n\n"
+            clear_edits()
+            set_in_flight(False)
+
+        return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+    # Non-stream fallback (rare)
+    parts = []
+    while has_edits():
+        t = pop_edit()
+        if t is None:
+            break
+        parts.append(t)
+    text = "".join(parts) or " "
+    clear_edits()
+    set_in_flight(False)
+    resp = CompletionResponse(
+        id="cmp-apply",
+        created=created,
+        model=request.model,
+        choices=[CompletionChoice(index=0, text=text, finish_reason="stop")],
+        usage=UsageStats(prompt_tokens=0, completion_tokens=len(text), total_tokens=len(text)),
+    )
+    return JSONResponse(resp.model_dump())
 
 
 @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)

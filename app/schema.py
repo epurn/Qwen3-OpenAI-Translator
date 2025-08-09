@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 
 
 class FunctionCall(BaseModel):
@@ -61,4 +61,27 @@ class ChatCompletionResponse(BaseModel):
     created: int
     model: str
     choices: List[Choice]
+    usage: UsageStats
+
+class CompletionRequest(BaseModel):
+    model: str
+    prompt: Union[str, List[str], None] = None
+    max_tokens: Optional[int] = None
+    temperature: Optional[float] = 1.0
+    stream: Optional[bool] = False
+    stop: Optional[Union[str, List[str]]] = None
+
+
+class CompletionChoice(BaseModel):
+    index: int
+    text: str
+    finish_reason: Optional[str] = "stop"
+
+
+class CompletionResponse(BaseModel):
+    id: str
+    object: Literal["text_completion"] = "text_completion"
+    created: int
+    model: str
+    choices: List[CompletionChoice]
     usage: UsageStats
