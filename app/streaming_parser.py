@@ -4,7 +4,7 @@ import uuid
 import logging
 from typing import Dict, Optional, List, Set, Tuple
 
-from app.state import push_edit
+from app.state import has_edits, is_in_flight, push_edit, set_in_flight
 
 
 # Set up logging
@@ -12,6 +12,12 @@ logger = logging.getLogger(__name__)
 
 def _gen_id() -> str:
     return f"call{uuid.uuid4().hex[:24]}"
+
+def _strip_quotes(s: str) -> str:
+    s = s.strip()
+    if len(s) >= 2 and ((s[0] == s[-1] == '"') or (s[0] == s[-1] == "'")):
+        return s[1:-1]
+    return s
 
 # Strict tool-fence:
 # - opening fence on its own line
@@ -81,16 +87,20 @@ class QwenStreamingParser:
             if fp in self._emitted:
                 continue
 
-
             if tool_name in {"edit_file", "edit_existing_file"}:
-                has_filepath = "filepath" in args and args["filepath"].strip()
-                has_changes = "changes" in args and str(args["changes"]).strip() != ""
-                if not (has_filepath and has_changes):
+                if is_in_flight() or has_edits():
+                    # Defer; we’ll retry on next buffer growth
+                    logger.debug("Deferring edit tool_call because another edit is in flight or queue not empty")
                     continue
-                new_text = args.get("text") or args.get("changes")
-                if new_text is not None:
-                    push_edit(new_text)
 
+                filepath = _strip_quotes(args.get("filepath", "") or "")
+                changes = args.get("changes") or args.get("text") or ""
+                if not filepath or not str(changes).strip():
+                    continue
+
+                # Enqueue the payload and mark as in-flight
+                push_edit(str(changes))
+                set_in_flight(True)
 
             arguments = json.dumps(args, ensure_ascii=False)
             logger.debug(f"_____ TOOL CALLS ____\n\tname: {tool_name}\n\t{arguments}")
@@ -98,7 +108,7 @@ class QwenStreamingParser:
             return {
                 "tool_calls": [{
                     "index": 0,
-                    "id": _gen_id(),
+                    "id": "call_apply_singleton",   # any placeholder; Continue ignores it
                     "type": "function",
                     "function": {"name": tool_name, "arguments": arguments},
                 }]
