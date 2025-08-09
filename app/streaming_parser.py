@@ -19,9 +19,8 @@ def _gen_id() -> str:
 # - must end with END_ARG immediately before closing fence
 TOOL_FENCE_RE = re.compile(
     r"```tool[ \t]*\r?\n"
-    r"(?P<body>[\s\S]*?)"           # allow anything, including ```
-    r"^\s*END_ARG\s*\r?\n"          # require explicit END_ARG line
-    r"```",
+    r"(?P<body>(?:(?!```)[\s\S])*?^\s*END_ARG\s*\r?\n)"  # include END_ARG
+    r"(?=```)",                                          # assert fence is next
     re.DOTALL | re.MULTILINE,
 )
 # Line-anchored tool name
