@@ -1,14 +1,22 @@
-"""Process-local state for small, shared values."""
-from typing import Optional
+# app/state.py
+"""Process-local state for streaming edit payloads."""
+from collections import deque
+from typing import Deque, Optional
 
-_LAST_EDIT_TEXT: Optional[str] = None
+_EDIT_QUEUE: Deque[str] = deque()
 
-def set_last_edit_text(value: Optional[str]) -> None:
-    global _LAST_EDIT_TEXT
-    _LAST_EDIT_TEXT = value
+def push_edit(text: str) -> None:
+    if text is None:
+        return
+    _EDIT_QUEUE.append(str(text))
 
-def get_last_edit_text() -> Optional[str]:
-    return _LAST_EDIT_TEXT
+def pop_edit() -> Optional[str]:
+    if not _EDIT_QUEUE:
+        return None
+    return _EDIT_QUEUE.popleft()
 
-def clear_last_edit_text() -> None:
-    set_last_edit_text(None)
+def clear_edits() -> None:
+    _EDIT_QUEUE.clear()
+
+def has_edits() -> bool:
+    return bool(_EDIT_QUEUE)

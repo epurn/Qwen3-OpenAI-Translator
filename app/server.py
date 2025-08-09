@@ -4,7 +4,7 @@ import time
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, StreamingResponse
 from typing import List, Optional, Set
-from app.state import get_last_edit_text
+from app.state import clear_edits, has_edits, pop_edit
 from app.streaming_parser import QwenStreamingParser
 from app.translator import translate_xml_to_openai
 from app.schema import AssistantMessage, ChatCompletionRequest, ChatCompletionResponse, Choice, CompletionChoice, CompletionRequest, CompletionResponse, FunctionCall, ToolCall, TranslatedResponse, TranslationRequest, UsageStats
@@ -44,37 +44,58 @@ async def health():
 
 @app.post("/v1/completions")
 async def legacy_completions(request: CompletionRequest):
-    """
-    Minimal /v1/completions shim for Continue's edit diff streamer.
-    DO NOT send an empty 'text' chunk—doing so wipes the file.
-    We emit no data chunks and only [DONE], so Continue falls back
-    to the tool call's provided 'text' for applying the edit.
-    """
+    print("HIT /v1/completions", flush=True)
     created = int(time.time())
+
     if request.stream:
         async def event_stream():
-            # single chunk with the full replacement text, then [DONE]
-            chunk = {
-                "id": "cmp-apply",
-                "object": "text_completion",
-                "created": created,
-                "model": request.model,
-                "choices": [{"index": 0, "text": get_last_edit_text(), "finish_reason": None}],
-            }
-            yield f"data: {json.dumps(chunk)}\n\n"
+            streamed_any = False
+            # drain the queue in order; one chunk per edit
+            while has_edits():
+                text = pop_edit()
+                if text is None:
+                    break
+                chunk = {
+                    "id": "cmp-apply",
+                    "object": "text_completion",
+                    "created": created,
+                    "model": request.model,
+                    "choices": [{"index": 0, "text": text, "finish_reason": None}],
+                }
+                yield f"data: {json.dumps(chunk)}\n\n"
+                streamed_any = True
+
+            # safety: if nothing queued, send one benign whitespace token to avoid “empty” handling
+            if not streamed_any:
+                chunk = {
+                    "id": "cmp-apply",
+                    "object": "text_completion",
+                    "created": created,
+                    "model": request.model,
+                    "choices": [{"index": 0, "text": " ", "finish_reason": None}],
+                }
+                yield f"data: {json.dumps(chunk)}\n\n"
+
             yield "data: [DONE]\n\n"
+            clear_edits()
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
-    # Non-stream fallback: return a harmless whitespace token (not empty)
-    return JSONResponse({
-        "id": "cmp-legacy",
-        "object": "text_completion",
-        "created": created,
-        "model": request.model,
-        "choices": [{"index": 0, "text": " ", "finish_reason": "stop"}],
-        "usage": {"prompt_tokens": 0, "completion_tokens": 1, "total_tokens": 1},
-    })
-
+    # non-stream fallback: concatenate remaining edits in order
+    parts: list[str] = []
+    while has_edits():
+        t = pop_edit()
+        if t is None:
+            break
+        parts.append(t)
+    text = "".join(parts) or " "
+    resp = CompletionResponse(
+        id="cmp-apply",
+        created=created,
+        model=request.model,
+        choices=[CompletionChoice(index=0, text=text, finish_reason="stop")],
+        usage=UsageStats(prompt_tokens=0, completion_tokens=len(text), total_tokens=len(text)),
+    )
+    return JSONResponse(resp.model_dump())
 @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
 async def openai_compatible(request: ChatCompletionRequest):
     logger.debug(f"Request stream: {request.stream}")

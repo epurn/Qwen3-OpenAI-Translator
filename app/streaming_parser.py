@@ -4,7 +4,7 @@ import uuid
 import logging
 from typing import Dict, Optional, List, Set, Tuple
 
-from app.state import set_last_edit_text
+from app.state import push_edit
 
 
 # Set up logging
@@ -19,8 +19,9 @@ def _gen_id() -> str:
 # - must end with END_ARG immediately before closing fence
 TOOL_FENCE_RE = re.compile(
     r"```tool[ \t]*\r?\n"
-    r"(?P<body>(?:(?!```)[\s\S])*?^\s*END_ARG\s*\r?\n)"  # include END_ARG
-    r"(?=```)",                                          # assert fence is next
+    r"(?P<body>[\s\S]*?)"           # allow anything, including ```
+    r"^\s*END_ARG\s*\r?\n"          # require explicit END_ARG line
+    r"```",
     re.DOTALL | re.MULTILINE,
 )
 # Line-anchored tool name
@@ -89,7 +90,7 @@ class QwenStreamingParser:
                     continue
                 new_text = args.get("text") or args.get("changes")
                 if new_text is not None:
-                    set_last_edit_text(new_text)
+                    push_edit(new_text)
 
 
             arguments = json.dumps(args, ensure_ascii=False)
