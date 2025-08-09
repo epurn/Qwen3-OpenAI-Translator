@@ -1,5 +1,5 @@
-from pydantic import BaseModel, ConfigDict
-from typing import Dict, List, Literal, Optional
+from pydantic import BaseModel
+from typing import Any, Dict, List, Literal, Optional
 
 
 class FunctionCall(BaseModel):
@@ -11,6 +11,10 @@ class ToolCall(BaseModel):
     type: str = "function"
     function: FunctionCall
     id: Optional[str] = None
+
+
+class TranslationRequest(BaseModel):
+    xml: str
 
 
 class TranslatedResponse(BaseModel):
@@ -41,6 +45,15 @@ class UsageStats(BaseModel):
     total_tokens: int
     prompt_tokens_details: Optional[dict] = None
 
+
+class ChatCompletionRequest(BaseModel):
+    model: str
+    messages: List[ChatMessage]
+    temperature: Optional[float] = 1.0
+    stream: Optional[bool] = False
+    tools: Optional[List[Dict[str, Any]]] = None
+    tool_choice: Optional[Dict[str, Any] | str] = None
+    
 
 class ChatCompletionResponse(BaseModel):
     id: str

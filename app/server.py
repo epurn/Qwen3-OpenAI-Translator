@@ -1,64 +1,67 @@
-from pprint import pprint
+import json
+import logging
 from fastapi import FastAPI
-from pydantic import BaseModel
-from typing import List, Optional
+from fastapi.responses import StreamingResponse
+from typing import List, Optional, Set
+from app.streaming_parser import QwenStreamingParser
 from app.translator import translate_xml_to_openai
-from app.schema import AssistantMessage, ChatCompletionResponse, ChatMessage, Choice, FunctionCall, ToolCall, TranslatedResponse, UsageStats
+from app.schema import AssistantMessage, ChatCompletionRequest, ChatCompletionResponse, Choice, FunctionCall, ToolCall, TranslatedResponse, TranslationRequest, UsageStats
 from dotenv import load_dotenv
 import httpx
 import os
+
+# Set up logging
+logger = logging.getLogger(__name__)
+# Create module logger
+logger.debug("logger initialized with DEBUG level")
 
 load_dotenv()
 app = FastAPI()
 
 # Add this line at the top (env var or hardcoded)
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
-OPENROUTER_BASE_URL = "https://openrouter.ai/api"
+API_KEY = os.getenv("API_KEY")
+QWEN_BASE_URL = os.getenv("QWEN_BASE_URL")
+
 
 # ----- Simple health + debug -----
 
-class TranslationRequest(BaseModel):
-    xml: str
-
 @app.post("/translate", response_model=TranslatedResponse)
 async def translate(request: TranslationRequest):
-    return translate_xml_to_openai(request.xml)
+    logger.debug(f"Translation request: {request.xml}")
+    response = translate_xml_to_openai(request.xml)
+    logger.debug(f"Translation response: {response}")
+    return response
 
 @app.post("/health")
 async def health():
+    logger.info("Health check endpoint called")
     return {"status": "ok"}
 
 
 # ----- OpenAI-compatible endpoint -----
 
-class ChatCompletionRequest(BaseModel):
-    model: str
-    messages: List[ChatMessage]
-    temperature: Optional[float] = 1.0
-    stream: Optional[bool] = False
-
-
-
 
 @app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
 async def openai_compatible(request: ChatCompletionRequest):
-    print("Request stream:", request.stream)
+    logger.debug(f"Request stream: {request.stream}")
     
-    request_payload = request.model_dump()
-    request_payload["stream"] = False
+    request_payload = request.model_dump(exclude_none=True)
+
+    if request.stream:
+        return await stream_chat(request)
 
     async with httpx.AsyncClient(timeout=60.0) as client:
         openrouter_response = await client.post(
-            f"{OPENROUTER_BASE_URL}/v1/chat/completions",
+            f"{QWEN_BASE_URL}/v1/chat/completions",
             headers={
-                "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+                "Authorization": f"Bearer {API_KEY}",
                 "Content-Type": "application/json",
             },
             json=request_payload,
         )
 
     if not openrouter_response.is_success:
-        print("OpenRouter error:", openrouter_response.text)
+        logger.error(f"OpenRouter error: {openrouter_response.text}")
         return {
             "error": "OpenRouter call failed",
             "status_code": openrouter_response.status_code,
@@ -66,10 +69,17 @@ async def openai_compatible(request: ChatCompletionRequest):
         }
 
     raw_data = openrouter_response.json()
+    logger.debug(f"Raw data from OpenRouter: {raw_data}")
     raw_response = raw_data["choices"][0]["message"]["content"]
 
-    translated = translate_xml_to_openai(raw_response)
-    if not translated.content and not translated.tool_calls:
+    logger.debug("Raw OpenRouter message: %s", raw_data["choices"][0]["message"])
+    translated = translate_xml_to_openai(raw_response, tools=request.tools)
+    if not translated.tool_calls:
+        openai_tool_calls = raw_data["choices"][0]["message"].get("tool_calls")
+        if openai_tool_calls:
+            tool_calls_list = [ToolCall(**call) for call in openai_tool_calls]
+            translated = TranslatedResponse(tool_calls=tool_calls_list, content=raw_response)
+    if not translated.content:
         translated.content = raw_response
 
     tool_calls_list: Optional[List[ToolCall]] = None
@@ -111,6 +121,76 @@ async def openai_compatible(request: ChatCompletionRequest):
         }))
     )
 
-    fianl_payload = response_payload.model_dump(exclude_none=True)
-    pprint(fianl_payload)
-    return fianl_payload
+    final_payload = response_payload.model_dump(exclude_none=True)
+    logger.debug(f"Final response payload: {final_payload}")
+    logger.debug("Final tool calls: %s", tool_calls_list)
+    return final_payload
+
+
+@app.post("/v1/chat/completions/stream")
+async def stream_chat(request: ChatCompletionRequest):
+    if not request.stream:
+        raise ValueError("Set stream=true to use this endpoint.")
+
+    logger.info(f"Streaming request received for model={request.model}")
+    logger.debug(f"Messages: {request.messages}")
+    logger.debug(f"Tools: {request.tools}")
+    logger.debug(f"Tool choice: {request.tool_choice}")
+
+    parser = QwenStreamingParser()
+    
+    preferred: Set[str] = {t["function"]["name"] for t in (request.tools or []) if t.get("type") == "function"}
+    parser = QwenStreamingParser(preferred_names=preferred)
+
+    async def event_stream():
+        accumulated = ""
+        previous = ""
+
+        async with httpx.AsyncClient(timeout=None) as client:
+            async with client.stream(
+                "POST",
+                f"{QWEN_BASE_URL}/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {API_KEY}",
+                    "Content-Type": "application/json",
+                },
+                json=request.model_dump(exclude_none=True),
+            ) as response:
+                async for line in response.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+
+                    if line.strip() == "data: [DONE]":
+                        logger.info("Received [DONE] from upstream.")
+                        yield "data: [DONE]\n\n"
+                        break
+
+                    try:
+                        payload = json.loads(line[6:])
+                        delta_text = payload["choices"][0]["delta"].get("content", "")
+                        # logger.debug(f"Delta text received: {delta_text!r}")
+
+                        current = accumulated + delta_text
+                        delta = parser.extract_stream_delta(previous, current, delta_text)
+
+                        if delta:
+                            # logger.debug(f"Tool call delta emitted: {json.dumps(delta)}")
+                            chunk = {
+                                "id": payload.get("id", "stream-id"),
+                                "object": "chat.completion.chunk",
+                                "created": payload.get("created", 0),
+                                "model": request.model,
+                                "choices": [{
+                                    "index": 0,
+                                    "delta": delta,
+                                    "finish_reason": None
+                                }]
+                            }
+                            yield f"data: {json.dumps(chunk)}\n\n"
+
+                        previous = current
+                        accumulated = current
+
+                    except Exception:
+                        logger.exception("Error processing stream chunk")
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
